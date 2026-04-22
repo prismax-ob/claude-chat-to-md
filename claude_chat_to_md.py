@@ -119,19 +119,35 @@ def discover_sessions() -> list[SessionInfo]:
             if subagent_dir.is_dir():
                 info.subagent_dir = subagent_dir
 
-            # Quick scan for title and first timestamp
+            # Scan for titles and first timestamp. A user rename is stored as
+            # a "custom-title" entry and should win over the auto-generated
+            # "ai-title". Both can appear anywhere in the file (and custom-title
+            # may be rewritten on each rename), so we scan the whole file and
+            # keep the last one seen.
+            ai_title: str | None = None
+            custom_title: str | None = None
             try:
                 with open(jsonl_file, encoding="utf-8") as f:
                     for line in f:
-                        obj = json.loads(line)
-                        if obj.get("type") == "ai-title":
-                            info.title = obj.get("aiTitle")
+                        # Cheap pre-filter: only parse lines that could
+                        # carry a title, or parse any line until we've seen
+                        # the first timestamp.
+                        if "-title" not in line and info.timestamp:
+                            continue
+                        try:
+                            obj = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        t = obj.get("type")
+                        if t == "ai-title":
+                            ai_title = obj.get("aiTitle") or ai_title
+                        elif t == "custom-title":
+                            custom_title = obj.get("customTitle") or custom_title
                         if not info.timestamp and obj.get("timestamp"):
                             info.timestamp = obj["timestamp"]
-                        if info.title and info.timestamp:
-                            break
-            except (json.JSONDecodeError, OSError):
+            except OSError:
                 pass
+            info.title = custom_title or ai_title
 
             sessions.append(info)
 
