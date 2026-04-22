@@ -121,7 +121,7 @@ def discover_sessions() -> list[SessionInfo]:
 
             # Quick scan for title and first timestamp
             try:
-                with open(jsonl_file) as f:
+                with open(jsonl_file, encoding="utf-8") as f:
                     for line in f:
                         obj = json.loads(line)
                         if obj.get("type") == "ai-title":
@@ -142,7 +142,7 @@ def discover_sessions() -> list[SessionInfo]:
 def parse_messages(jsonl_path: Path) -> list[dict]:
     """Parse a JSONL file into an ordered list of message records."""
     messages = []
-    with open(jsonl_path) as f:
+    with open(jsonl_path, encoding="utf-8") as f:
         for line in f:
             try:
                 obj = json.loads(line)
@@ -287,7 +287,7 @@ def convert_subagent(jsonl_path: Path, meta_path: Path | None) -> str:
     meta = {}
     if meta_path and meta_path.exists():
         try:
-            meta = json.loads(meta_path.read_text())
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -543,7 +543,7 @@ def main() -> None:
             safe_title = (s.title or "untitled").replace(" ", "-").replace("/", "-")[:50]
             filename = f"{ts}-{safe_title}.md" if ts else f"{s.session_id[:8]}-{safe_title}.md"
             out_path = out_dir / filename
-            out_path.write_text(md)
+            out_path.write_text(md, encoding="utf-8")
             print(f"Wrote {out_path}", file=sys.stderr)
         return
 
@@ -562,7 +562,7 @@ def main() -> None:
     md = convert_session(session, include_subagents, include_tool_results)
 
     if args.output:
-        Path(args.output).write_text(md)
+        Path(args.output).write_text(md, encoding="utf-8")
         print(f"Wrote {args.output}", file=sys.stderr)
     else:
         print(md)
