@@ -471,7 +471,16 @@ def convert_session(
 
             formatted = format_content(content)
             if formatted.strip():
-                lines.append(f"## User\n\n{formatted}\n")
+                # Wrap user messages in a blue-styled <div> so they're
+                # visually distinct from assistant replies in renderers
+                # that honor inline HTML + CSS (VS Code preview, Obsidian,
+                # Typora, etc.). GitHub's renderer strips `style`
+                # attributes for security, so the color is suppressed
+                # there — the Markdown still renders correctly, just in
+                # the default color.
+                lines.append(
+                    f'<div style="color: #1e6bb8">\n\n## User\n\n{formatted}\n\n</div>\n'
+                )
 
         elif role == "assistant":
             formatted_parts = []
