@@ -40,6 +40,25 @@ claude-chat-to-md --list
 3    2025-10-13 16:45     c9d0e1f2..   Debug CI pipeline                                   dev/infra
 ```
 
+By default `--list` shows only **active** conversations — those still visible in the Claude Desktop app. Renamed sessions are displayed with their user-chosen title (falling back to the auto-generated one).
+
+#### Including archived or deleted sessions
+
+Claude Desktop tracks every session as active, archived, or deleted. `claude-chat-to-md` classifies each session on disk by cross-referencing with the desktop app's per-session metadata. Two opt-in flags broaden the listing:
+
+```bash
+# Active + archived
+claude-chat-to-md --list --show-archived
+
+# Active + sessions deleted from the UI (whose .jsonl still exists on disk)
+claude-chat-to-md --list --show-deleted
+
+# Everything on disk
+claude-chat-to-md --list --show-archived --show-deleted
+```
+
+> If Claude Desktop isn't installed on the machine (pure-CLI install), these flags have no effect — the tool can't classify sessions and simply lists every `.jsonl` it finds. Both the standard Windows installer and the MSIX/Microsoft Store package are detected automatically, as are macOS and Linux installs.
+
 ### Convert a session
 
 ```bash
@@ -73,7 +92,9 @@ claude-chat-to-md --all --output-dir ./exports/
 
 | Flag | Description |
 |---|---|
-| `--list`, `-l` | List all available sessions |
+| `--list`, `-l` | List sessions (active only by default) |
+| `--show-archived` | Also include sessions archived in the Claude Desktop UI |
+| `--show-deleted` | Also include sessions deleted from the Desktop UI whose `.jsonl` still exists |
 | `--latest` | Convert the most recent session |
 | `--all` | Convert all sessions |
 | `--project`, `-p` | Filter sessions by project path substring |

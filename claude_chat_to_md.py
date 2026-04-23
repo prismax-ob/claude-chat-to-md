@@ -4,18 +4,26 @@
 Reads session JSONL files from ~/.claude/projects/ and produces clean,
 readable Markdown — including subagent conversations.
 
+By default --list shows only active conversations. Archived and deleted
+sessions are hidden unless opted back in.
+
 Usage:
-    # List all sessions
+    # List active sessions
     claude-chat-to-md --list
 
-    # Convert a specific session (by UUID or partial match)
+    # Include archived and/or deleted sessions in the list
+    claude-chat-to-md --list --show-archived
+    claude-chat-to-md --list --show-deleted
+    claude-chat-to-md --list --show-archived --show-deleted
+
+    # Convert a specific session (by UUID prefix, index, or title substring)
     claude-chat-to-md 2354ca15
 
     # Convert the most recent session for a project
     claude-chat-to-md --latest --project myapp
 
-    # Convert all sessions
-    claude-chat-to-md --all
+    # Convert all sessions into a directory
+    claude-chat-to-md --all -d ./exported
 
     # Output to a specific file
     claude-chat-to-md 2354ca15 -o chat.md
@@ -25,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -35,6 +44,69 @@ from typing import TextIO
 
 CLAUDE_DIR = Path.home() / ".claude"
 PROJECTS_DIR = CLAUDE_DIR / "projects"
+
+
+def _desktop_session_roots() -> list[Path]:
+    """Return every existing Claude Desktop ``claude-code-sessions`` dir.
+
+    Claude Desktop can be installed in several forms and a user may have
+    more than one at once. Each keeps per-session metadata under a
+    ``claude-code-sessions`` subdirectory of its app-data folder:
+
+        Windows standard:  %APPDATA%\\Claude
+        Windows MSIX/Store: %LOCALAPPDATA%\\Packages\\Claude_<hash>\\LocalCache\\Roaming\\Claude
+        macOS:              ~/Library/Application Support/Claude
+        Linux:              ~/.config/Claude
+
+    Only roots that actually exist on disk are returned.
+    """
+    bases: list[Path] = []
+    if sys.platform == "win32":
+        if appdata := os.environ.get("APPDATA"):
+            bases.append(Path(appdata) / "Claude")
+        if local_appdata := os.environ.get("LOCALAPPDATA"):
+            # MSIX package folder is Claude_<publisher hash>; the hash
+            # varies per install, so glob for any match.
+            bases.extend(
+                (Path(local_appdata) / "Packages").glob(
+                    "Claude_*/LocalCache/Roaming/Claude"
+                )
+            )
+    elif sys.platform == "darwin":
+        bases.append(Path.home() / "Library" / "Application Support" / "Claude")
+    else:
+        bases.append(Path.home() / ".config" / "Claude")
+
+    return [root for b in bases if (root := b / "claude-code-sessions").is_dir()]
+
+
+def desktop_session_states() -> dict[str, bool] | None:
+    """CLI session IDs that Claude Desktop tracks, mapped to ``isArchived``.
+
+    The desktop app writes one ``local_*.json`` per tracked session; each
+    carries a ``cliSessionId`` pointing at the ``.jsonl`` under
+    ``~/.claude/projects/``, plus an ``isArchived`` boolean set when the
+    user archives the conversation.
+
+    Sessions on disk but absent from this mapping were deleted from the UI
+    (the metadata file is removed on delete, but the ``.jsonl`` stays).
+
+    Returns ``None`` when no desktop install is detected (pure-CLI user);
+    callers should then fall back to showing every on-disk ``.jsonl``.
+    """
+    roots = _desktop_session_roots()
+    if not roots:
+        return None
+    states: dict[str, bool] = {}
+    for root in roots:
+        for meta_file in root.rglob("local_*.json"):
+            try:
+                obj = json.loads(meta_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            if cli_id := obj.get("cliSessionId"):
+                states[cli_id] = bool(obj.get("isArchived"))
+    return states
 
 
 @dataclass
@@ -93,6 +165,44 @@ class SessionInfo:
         return "/".join(reconstructed)
 
 
+def _scan_title_and_timestamp(jsonl_path: Path) -> tuple[str | None, str | None]:
+    """Pull the display title and first timestamp from a session ``.jsonl``.
+
+    Titles live in two kinds of records:
+
+        {"type": "ai-title",     "aiTitle":     "..."}  # auto-generated
+        {"type": "custom-title", "customTitle": "..."}  # user rename — wins
+
+    A custom title always beats an AI title. Both may be rewritten later in
+    the file (the custom one is re-emitted on every rename), so we scan to
+    the end and keep the last of each kind.
+    """
+    ai_title: str | None = None
+    custom_title: str | None = None
+    timestamp: str | None = None
+    try:
+        with open(jsonl_path, encoding="utf-8") as f:
+            for line in f:
+                # Once we have a timestamp, only title records still matter —
+                # and every title record contains the literal "-title".
+                if timestamp and "-title" not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                kind = obj.get("type")
+                if kind == "ai-title":
+                    ai_title = obj.get("aiTitle") or ai_title
+                elif kind == "custom-title":
+                    custom_title = obj.get("customTitle") or custom_title
+                if not timestamp and obj.get("timestamp"):
+                    timestamp = obj["timestamp"]
+    except OSError:
+        pass
+    return custom_title or ai_title, timestamp
+
+
 def discover_sessions() -> list[SessionInfo]:
     """Find all session JSONL files under ~/.claude/projects/."""
     sessions: list[SessionInfo] = []
@@ -119,35 +229,7 @@ def discover_sessions() -> list[SessionInfo]:
             if subagent_dir.is_dir():
                 info.subagent_dir = subagent_dir
 
-            # Scan for titles and first timestamp. A user rename is stored as
-            # a "custom-title" entry and should win over the auto-generated
-            # "ai-title". Both can appear anywhere in the file (and custom-title
-            # may be rewritten on each rename), so we scan the whole file and
-            # keep the last one seen.
-            ai_title: str | None = None
-            custom_title: str | None = None
-            try:
-                with open(jsonl_file, encoding="utf-8") as f:
-                    for line in f:
-                        # Cheap pre-filter: only parse lines that could
-                        # carry a title, or parse any line until we've seen
-                        # the first timestamp.
-                        if "-title" not in line and info.timestamp:
-                            continue
-                        try:
-                            obj = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        t = obj.get("type")
-                        if t == "ai-title":
-                            ai_title = obj.get("aiTitle") or ai_title
-                        elif t == "custom-title":
-                            custom_title = obj.get("customTitle") or custom_title
-                        if not info.timestamp and obj.get("timestamp"):
-                            info.timestamp = obj["timestamp"]
-            except OSError:
-                pass
-            info.title = custom_title or ai_title
+            info.title, info.timestamp = _scan_title_and_timestamp(jsonl_file)
 
             sessions.append(info)
 
@@ -511,7 +593,12 @@ def main() -> None:
         nargs="?",
         help="Session UUID (prefix), index number from --list, or title substring",
     )
-    parser.add_argument("--list", "-l", action="store_true", help="List all sessions")
+    parser.add_argument(
+        "--list",
+        "-l",
+        action="store_true",
+        help="List sessions (active only by default; see --show-archived, --show-deleted)",
+    )
     parser.add_argument("--latest", action="store_true", help="Convert the most recent session")
     parser.add_argument("--all", action="store_true", help="Convert all sessions")
     parser.add_argument("--project", "-p", help="Filter by project path substring")
@@ -525,9 +612,39 @@ def main() -> None:
     parser.add_argument(
         "--output-dir", "-d", help="Output directory (for --all mode)"
     )
+    parser.add_argument(
+        "--show-archived",
+        action="store_true",
+        help="Also include sessions archived in the Claude Desktop UI.",
+    )
+    parser.add_argument(
+        "--show-deleted",
+        action="store_true",
+        help="Also include sessions that were deleted from the Claude "
+        "Desktop UI but whose .jsonl file still exists on disk.",
+    )
 
     args = parser.parse_args()
     sessions = discover_sessions()
+
+    # Cross-reference with Claude Desktop's per-session metadata to filter
+    # by UI state. Each session falls in one of three buckets:
+    #   - active:   tracked by desktop,  isArchived is False
+    #   - archived: tracked by desktop,  isArchived is True
+    #   - deleted:  absent from desktop metadata (file removed on delete)
+    # Active is always shown; --show-archived and --show-deleted opt each
+    # of the other buckets in. If no desktop install is found, `states` is
+    # None and we can't classify anything — leave the list untouched so
+    # pure-CLI users still see their sessions.
+    states = desktop_session_states()
+    if states is not None:
+        sessions = [
+            s
+            for s in sessions
+            if (archived := states.get(s.session_id)) is False
+            or (archived is True and args.show_archived)
+            or (archived is None and args.show_deleted)
+        ]
 
     if args.project:
         sessions = [s for s in sessions if args.project.lower() in s.project_path.lower()]
