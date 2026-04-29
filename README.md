@@ -13,7 +13,7 @@ pipx install claude-chat-to-md
 Or with pip:
 
 ```bash
-pip install claude-chat-to-md
+python -m pip install claude-chat-to-md
 ```
 
 Or run directly from source:
@@ -21,8 +21,10 @@ Or run directly from source:
 ```bash
 git clone https://github.com/luckynick/claude-chat-to-md.git
 cd claude-chat-to-md
-pip install -e .
+python -m pip install -e .
 ```
+
+> If `pip`/`pipx` aren't on your `PATH` (common on Windows when Python is installed without the launcher, or inside a freshly created venv), use `python -m pip ...` as shown above. If pip itself is missing from the interpreter, bootstrap it once with `python -m ensurepip --upgrade`.
 
 ## Usage
 
